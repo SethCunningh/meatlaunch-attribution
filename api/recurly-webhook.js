@@ -115,11 +115,12 @@ payment = await recurlyFetch(`/api/v2021-02-25/transactions/uuid-${txnUuid}`);
   console.log("Recurly payment details:", payment);
 
   // Extract attribution fields (best-effort)
-  const email =
-    payment?.account?.email ||
-    payment?.billing_info?.email ||
-    payment?.account?.billing_info?.email ||
-    null;
+ const email =
+  payment?.account?.email ||
+  payment?.account?.billing_info?.email ||
+  payment?.billing_info?.email ||
+  null;
+
 
   const invoiceId = payment?.invoice?.id || null;
   const transactionId = payment?.id || paymentId;
