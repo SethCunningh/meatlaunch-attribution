@@ -8,6 +8,11 @@ const supabase = createClient(
 export default async function handler(req, res) {
   console.log("HIT /api/start-signup", req.method);
 
+  // ✅ If GET, just respond so we can tell it was hit
+  if (req.method === "GET") {
+    return res.status(200).send("OK (GET) - endpoint alive");
+  }
+
   if (req.method !== "POST") {
     return res.status(405).send("Method Not Allowed");
   }
@@ -26,7 +31,7 @@ export default async function handler(req, res) {
         {
           shop_id: shopId,
           employee_code: employeeCode,
-          email: email,
+          email,
           status: "PENDING"
         }
       ])
@@ -34,13 +39,12 @@ export default async function handler(req, res) {
       .single();
 
     if (error) {
-      console.log("SUPABASE INSERT ERROR", error);
-      return res.status(500).json({ error: "Supabase insert failed", details: error.message });
+      console.log("SUPABASE ERROR", error);
+      return res.status(500).json({ error: error.message });
     }
 
     console.log("INSERT OK", data);
-
-    return res.status(200).json({ success: true, attemptId: data.id, createdAt: data.created_at });
+    return res.status(200).json({ ok: true, attemptId: data.id, createdAt: data.created_at });
   } catch (e) {
     console.log("SERVER ERROR", e);
     return res.status(500).json({ error: "Server error" });
