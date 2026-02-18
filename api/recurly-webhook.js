@@ -103,7 +103,9 @@ export default async function handler(req, res) {
   // Fetch full payment details from Recurly (v3 API)
   let payment;
   try {
-    payment = await recurlyFetch(`/payments/${paymentId}`);
+    const txnUuid = payload.uuid;
+payment = await recurlyFetch(`/api/v2021-02-25/transactions/uuid-${txnUuid}`);
+
   } catch (e) {
     console.error("Failed to fetch payment details:", e);
     // Return 200 so Recurly doesn't hammer retries while we debug
