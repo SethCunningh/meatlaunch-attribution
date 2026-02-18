@@ -6,40 +6,43 @@ const supabase = createClient(
 );
 
 export default async function handler(req, res) {
-  // Allow Wix to call this endpoint
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
+  console.log("HIT /api/start-signup", req.method);
 
   if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
+    return res.status(405).send("Method Not Allowed");
   }
 
-  const { shopId, employeeCode, email } = req.body || {};
+  try {
+    const { shopId, employeeCode, email } = req.body || {};
+    console.log("BODY", { shopId, employeeCode, email });
 
-  if (!shopId || !employeeCode || !email) {
-    return res.status(400).json({ error: "Missing required fields" });
+    if (!shopId || !employeeCode || !email) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+
+    const { data, error } = await supabase
+      .from("signup_attempts")
+      .insert([
+        {
+          shop_id: shopId,
+          employee_code: employeeCode,
+          email: email,
+          status: "PENDING"
+        }
+      ])
+      .select("id, created_at")
+      .single();
+
+    if (error) {
+      console.log("SUPABASE INSERT ERROR", error);
+      return res.status(500).json({ error: "Supabase insert failed", details: error.message });
+    }
+
+    console.log("INSERT OK", data);
+
+    return res.status(200).json({ success: true, attemptId: data.id, createdAt: data.created_at });
+  } catch (e) {
+    console.log("SERVER ERROR", e);
+    return res.status(500).json({ error: "Server error" });
   }
-
-  const { error } = await supabase
-    .from("signup_attempts")
-    .insert([
-      {
-        shop_id: shopId.toUpperCase().trim(),
-        employee_code: employeeCode.toUpperCase().trim(),
-        email: email.toLowerCase().trim(),
-        status: "PENDING"
-      }
-    ]);
-
-  if (error) {
-    console.error("Supabase insert error:", error);
-    return res.status(500).json({ error: "Database error" });
-  }
-
-  return res.status(200).json({ success: true });
 }
