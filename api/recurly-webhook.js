@@ -2,7 +2,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 export const config = {
-  api: { bodyParser: false }, // keep raw body
+  api: { bodyParser: false }, // keep raw body for signature verification later
 };
 
 const supabase = createClient(
@@ -13,7 +13,10 @@ const supabase = createClient(
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS, GET");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Recurly-Signature");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Accept, Recurly-Signature"
+  );
 }
 
 async function readRawBody(req) {
@@ -22,26 +25,27 @@ async function readRawBody(req) {
   return Buffer.concat(chunks);
 }
 
+/**
+ * Recurly v3 JSON API helper
+ * Host MUST be v3.recurly.com (not your subdomain admin host)
+ */
 async function recurlyFetch(path) {
-  const subdomain = process.env.RECURLY_SUBDOMAIN; // e.g. "meatlaunch"
   const apiKey = process.env.RECURLY_API_KEY;
+  if (!apiKey) throw new Error("Missing RECURLY_API_KEY env var");
 
-  if (!subdomain || !apiKey) {
-    throw new Error("Missing RECURLY_SUBDOMAIN or RECURLY_API_KEY env var");
-  }
-
-  const url = `https://${subdomain}.recurly.com${path}`;
+  const url = `https://v3.recurly.com${path}`;
 
   const resp = await fetch(url, {
     method: "GET",
     headers: {
-      "Accept": "application/vnd.recurly.v2021-02-25+json",
-      "Authorization": "Basic " + Buffer.from(`${apiKey}:`).toString("base64"),
+      Accept: "application/vnd.recurly.v2021-02-25+json",
+      Authorization: "Basic " + Buffer.from(`${apiKey}:`).toString("base64"),
     },
   });
 
   const text = await resp.text();
   if (!resp.ok) {
+    // Recurly returns JSON on errors sometimes, but can return HTML too.
     throw new Error(`Recurly API ${resp.status}: ${text}`);
   }
 
@@ -51,13 +55,18 @@ async function recurlyFetch(path) {
 export default async function handler(req, res) {
   setCors(res);
 
+  // Preflight / debug
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method === "GET") return res.status(200).send("OK (GET) - recurly webhook endpoint alive");
-  if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
+  if (req.method === "GET")
+    return res.status(200).send("OK (GET) - recurly webhook endpoint alive");
+  if (req.method !== "POST")
+    return res.status(405).json({ error: "Method Not Allowed" });
 
+  // Read raw body
   const rawBody = await readRawBody(req);
   const bodyText = rawBody.toString("utf8");
 
+  // Parse JSON payload (short payload when Recurly endpoint set to "JSON")
   let payload;
   try {
     payload = JSON.parse(bodyText);
@@ -68,10 +77,11 @@ export default async function handler(req, res) {
 
   console.log("Recurly webhook payload (short):", payload);
 
-  const eventUuid = payload.uuid || null;          // use as recurly_event_id
-  const objectType = payload.object_type || null;  // "payment"
-  const paymentId = payload.id || null;            // payment id like "ygh8acybbvey"
-  const eventType = payload.event_type || null;    // "succeeded"
+  // Recurly short payload fields
+  const eventUuid = payload.uuid || null; // great for dedupe
+  const objectType = payload.object_type || null; // "payment"
+  const paymentId = payload.id || null; // payment id like "ygh8acybbvey"
+  const eventType = payload.event_type || null; // "succeeded"
 
   // Dedupe: if we've already processed this event uuid, exit cleanly
   if (eventUuid) {
@@ -85,31 +95,34 @@ export default async function handler(req, res) {
     if (existing) return res.status(200).send("ok (duplicate)");
   }
 
-  // We only care about successful payment events
+  // Only handle successful payment events
   if (objectType !== "payment" || eventType !== "succeeded" || !paymentId) {
     return res.status(200).send("ok (ignored)");
   }
 
-  // 1) Fetch full payment details from Recurly
+  // Fetch full payment details from Recurly (v3 API)
   let payment;
   try {
-    payment = await recurlyFetch(`/api/v2021-02-25/payments/${paymentId}`);
+    payment = await recurlyFetch(`/payments/${paymentId}`);
   } catch (e) {
     console.error("Failed to fetch payment details:", e);
-    return res.status(200).send("ok (payment fetch failed)"); // keep 200 to avoid retries storm
+    // Return 200 so Recurly doesn't hammer retries while we debug
+    return res.status(200).send("ok (payment fetch failed)");
   }
 
   console.log("Recurly payment details:", payment);
 
-  // Extract email + invoice/subscription/transaction ids where available
+  // Extract attribution fields (best-effort)
   const email =
     payment?.account?.email ||
     payment?.billing_info?.email ||
+    payment?.account?.billing_info?.email ||
     null;
 
   const invoiceId = payment?.invoice?.id || null;
-  const transactionId = payment?.id || paymentId; // payment id is useful regardless
-  // subscription might not be directly on payment; often via invoice line items
+  const transactionId = payment?.id || paymentId;
+
+  // subscription may or may not be present on payment; keep best-effort
   const subscriptionId =
     payment?.subscription?.id ||
     payment?.invoice?.subscription?.id ||
@@ -123,7 +136,7 @@ export default async function handler(req, res) {
     return res.status(200).send("ok (no email)");
   }
 
-  // 2) Find most recent pending attempt for that email (last 6 hours)
+  // Find most recent pending attempt for that email in last 6 hours
   const cutoff = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
 
   const { data: attempt, error: attemptErr } = await supabase
@@ -146,7 +159,7 @@ export default async function handler(req, res) {
     return res.status(200).send("ok (no matching attempt)");
   }
 
-  // 3) Mark paid
+  // Mark PAID
   const { error: updErr } = await supabase
     .from("signup_attempts")
     .update({
