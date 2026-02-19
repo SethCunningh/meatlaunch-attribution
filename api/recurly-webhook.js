@@ -14,7 +14,7 @@ const resp = await fetch(url, {
     Authorization: `Basic ${Buffer.from(`${apiKey}:`).toString("base64")}`,
   },
 
-  });
+ 
 
   const text = await resp.text();
 
