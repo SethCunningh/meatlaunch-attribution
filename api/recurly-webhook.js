@@ -6,21 +6,22 @@ async function fetchRecurlySubscription(uuid) {
 
   const url = `https://v3.recurly.com/subscriptions/${uuid}`;
 
-const resp = await fetch(url, {
-  method: "GET",
-  headers: {
-    Accept: "application/vnd.recurly.v2021-02-25",
-    "Accept-Language": "en-US",
-    Authorization: `Basic ${Buffer.from(`${apiKey}:`).toString("base64")}`,
-  },
-
- 
+  const resp = await fetch(url, {
+    method: "GET",
+    headers: {
+      Accept: "application/vnd.recurly.v2021-02-25",
+      "Accept-Language": "en-US",
+      Authorization: `Basic ${Buffer.from(`${apiKey}:`).toString("base64")}`,
+    },
+  });
 
   const text = await resp.text();
 
   // 🔥 ONE LINE THAT'S EASY TO FIND
   console.log(
-    `### RECURLY_FETCH uuid=${uuid} status=${resp.status} snippet=${text.slice(0, 300).replace(/\s+/g, " ")}`
+    `### RECURLY_FETCH uuid=${uuid} status=${resp.status} snippet=${text
+      .slice(0, 300)
+      .replace(/\s+/g, " ")}`
   );
 
   if (!resp.ok) throw new Error(`Recurly fetch failed ${resp.status}: ${text}`);
@@ -40,20 +41,27 @@ export default async function handler(req, res) {
         plan_code: sub?.plan?.code ?? null,
         state: sub?.state ?? sub?.status ?? null,
         account_code: sub?.account?.code ?? null,
-        account_email: sub?.account?.email ?? sub?.account?.bill_to?.email ?? null,
+        account_email:
+          sub?.account?.email ?? sub?.account?.bill_to?.email ?? null,
         keys: Object.keys(sub || {}),
       });
     } catch (e) {
-      return res.status(200).json({ ok: false, error: String(e?.message || e) });
+      return res
+        .status(200)
+        .json({ ok: false, error: String(e?.message || e) });
     }
   }
 
-  if (req.method === "GET" || req.method === "HEAD") return res.status(200).send("ok-v3");
+  // Health check
+  if (req.method === "GET" || req.method === "HEAD")
+    return res.status(200).send("ok-v3");
+
   if (req.method !== "POST") return res.status(200).send("ok-v3");
 
   const supabaseUrl = process.env.SUPABASE_URL;
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!supabaseUrl || !supabaseKey) return res.status(500).send("Missing Supabase env vars");
+  if (!supabaseUrl || !supabaseKey)
+    return res.status(500).send("Missing Supabase env vars");
 
   const supabase = createClient(supabaseUrl, supabaseKey);
 
@@ -80,7 +88,8 @@ export default async function handler(req, res) {
     const provider_subscription_id = sub?.uuid || subUuid;
     const plan_code = sub?.plan?.code || null;
     const status = sub?.state || sub?.status || null;
-    const current_period_end = sub?.current_period_ends_at || sub?.current_term_ends_at || null;
+    const current_period_end =
+      sub?.current_period_ends_at || sub?.current_term_ends_at || null;
 
     const email = sub?.account?.email || sub?.account?.bill_to?.email || null;
     const account_code = sub?.account?.code || null;
@@ -101,7 +110,9 @@ export default async function handler(req, res) {
     }
 
     if (!provider_subscription_id || !email || !plan_code) {
-      console.log(`### SKIP_UPSERT missing provider_subscription_id/email/plan_code`);
+      console.log(
+        `### SKIP_UPSERT missing provider_subscription_id/email/plan_code`
+      );
       return res.status(200).send("ok");
     }
 
