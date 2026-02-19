@@ -9,7 +9,7 @@ async function fetchRecurlySubscription(uuid) {
   const resp = await fetch(url, {
     method: "GET",
     headers: {
-      // ✅ Recurly wants the version in Accept, not as Recurly-Version
+      // ✅ Recurly requires versioned Accept header
       Accept: "application/vnd.recurly.v2021-02-25",
       Authorization: `Basic ${Buffer.from(`${apiKey}:`).toString("base64")}`,
     },
@@ -24,8 +24,9 @@ async function fetchRecurlySubscription(uuid) {
 }
 
 export default async function handler(req, res) {
-  if (req.method === "GET" || req.method === "HEAD") return res.status(200).send("ok");
-  if (req.method !== "POST") return res.status(200).send("ok");
+  // ✅ This must be inside the handler
+  if (req.method === "GET" || req.method === "HEAD") return res.status(200).send("ok-v2");
+  if (req.method !== "POST") return res.status(200).send("ok-v2");
 
   const supabaseUrl = process.env.SUPABASE_URL;
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -42,7 +43,7 @@ export default async function handler(req, res) {
     const eventType = payload?.event_type || payload?.type || "unknown";
     const eventId = payload?.id || payload?.event_id || null;
 
-    // Log raw webhook payload
+    // 1) Log raw webhook payload
     const { error: logErr } = await supabase.from("webhook_events").insert({
       provider: "recurly",
       event_type: eventType,
@@ -51,11 +52,12 @@ export default async function handler(req, res) {
     });
     if (logErr) console.error("Supabase webhook_events insert error:", logErr);
 
+    // 2) Slim payload contains subscription uuid
     const subUuid = payload?.uuid;
     console.log("Webhook eventType:", eventType, "subUuid:", subUuid);
     if (!subUuid) return res.status(200).send("ok");
 
-    // Fetch full subscription from Recurly
+    // 3) Fetch full subscription from Recurly
     const sub = await fetchRecurlySubscription(subUuid);
 
     const provider_subscription_id = sub?.uuid || subUuid;
@@ -70,7 +72,7 @@ export default async function handler(req, res) {
 
     const account_code = sub?.account?.code || null;
 
-    // Map shop by plan_code
+    // 4) Map shop by plan_code
     let shop_id = null;
     if (plan_code) {
       const { data: shopRow, error: shopErr } = await supabase
@@ -78,7 +80,6 @@ export default async function handler(req, res) {
         .select("id")
         .eq("plan_code", plan_code)
         .maybeSingle();
-
       if (shopErr) console.error("Shop lookup error:", shopErr);
       shop_id = shopRow?.id || null;
     }
@@ -93,7 +94,7 @@ export default async function handler(req, res) {
       current_period_end,
     });
 
-    // Upsert into subscriptions
+    // 5) Upsert into subscriptions
     if (provider_subscription_id && email && plan_code) {
       const { error: upsertErr } = await supabase.from("subscriptions").upsert(
         {
@@ -103,7 +104,7 @@ export default async function handler(req, res) {
           email,
           plan_code,
           shop_id,
-          status: status || (eventType === "canceled" ? "canceled" : "active"),
+          status: status || "active",
           current_period_end,
           updated_at: new Date().toISOString(),
         },
