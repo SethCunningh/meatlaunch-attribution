@@ -1,9 +1,7 @@
 // api/recurly-webhook.js
 import { createClient } from "@supabase/supabase-js";
 
-export const config = {
-  api: { bodyParser: false },
-};
+export const config = { api: { bodyParser: false } };
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -25,14 +23,12 @@ async function readRawBody(req) {
   return Buffer.concat(chunks);
 }
 
-function getRecurlyAuthHeader() {
+function recurlyAuth() {
   const apiKey = process.env.RECURLY_API_KEY;
   if (!apiKey) throw new Error("Missing RECURLY_API_KEY env var");
-  // Recurly v3 uses Basic auth where username=API_KEY and password is blank
   return "Basic " + Buffer.from(`${apiKey}:`).toString("base64");
 }
 
-// Always use v3.recurly.com for the v2021 API
 async function recurlyGet(path) {
   const url = `https://v3.recurly.com${path}`;
 
@@ -40,7 +36,7 @@ async function recurlyGet(path) {
     method: "GET",
     headers: {
       Accept: "application/vnd.recurly.v2021-02-25+json",
-      Authorization: getRecurlyAuthHeader(),
+      Authorization: recurlyAuth(),
     },
   });
 
@@ -48,7 +44,6 @@ async function recurlyGet(path) {
   if (!resp.ok) {
     throw new Error(`Recurly API ${resp.status}: ${text.slice(0, 300)}`);
   }
-
   return JSON.parse(text);
 }
 
@@ -62,11 +57,10 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method Not Allowed" });
 
   const rawBody = await readRawBody(req);
-  const bodyText = rawBody.toString("utf8");
 
   let payload;
   try {
-    payload = JSON.parse(bodyText);
+    payload = JSON.parse(rawBody.toString("utf8"));
   } catch (e) {
     console.error("Webhook JSON parse error:", e);
     return res.status(400).send("invalid json");
@@ -74,41 +68,44 @@ export default async function handler(req, res) {
 
   console.log("Recurly webhook payload (short):", payload);
 
-  const eventUuid = payload.uuid || null;          // event uuid (dedupe)
-  const objectType = payload.object_type || null;  // "payment"
-  const eventType = payload.event_type || null;    // "succeeded"
-  const transactionId = payload.id || null;        // IMPORTANT: use this for /transactions/{id}
+  const eventUuid = payload.uuid || null;
+  const objectType = payload.object_type || null; // "payment"
+  const eventType = payload.event_type || null;   // "succeeded"
+  const paymentId = payload.id || null;           // yghskgngqynb1
 
-  // Dedupe
+  // dedupe by event uuid
   if (eventUuid) {
-    const { data: existing, error: existErr } = await supabase
+    const { data: existing } = await supabase
       .from("signup_attempts")
       .select("recurly_event_id")
       .eq("recurly_event_id", eventUuid)
       .maybeSingle();
 
-    if (existErr) console.warn("Dedupe lookup error:", existErr);
     if (existing) return res.status(200).send("ok (duplicate)");
   }
 
-  // Only handle successful payment events
-  if (objectType !== "payment" || eventType !== "succeeded" || !transactionId) {
+  // Only handle payment.succeeded
+  if (objectType !== "payment" || eventType !== "succeeded" || !paymentId) {
     return res.status(200).send("ok (ignored)");
   }
 
-  // 1) Fetch transaction details
-  let txn;
+  // 1) Fetch payment details
+  let payment;
   try {
-    txn = await recurlyGet(`/api/v2021-02-25/transactions/${transactionId}`);
+    payment = await recurlyGet(`/api/v2021-02-25/payments/${paymentId}`);
   } catch (e) {
-    console.error("Failed to fetch transaction:", e);
-    return res.status(200).send("ok (txn fetch failed)");
+    console.error("Failed to fetch payment:", e);
+    return res.status(200).send("ok (payment fetch failed)");
   }
 
-  // 2) Get account + email (most reliable)
-  const accountId = txn?.account?.id || txn?.account_id || null;
+  // 2) Fetch account for email (most reliable)
+  const accountId =
+    payment?.account?.id ||
+    payment?.account_id ||
+    null;
 
-  let email = txn?.account?.email || null;
+  let email = payment?.account?.email || null;
+
   if (!email && accountId) {
     try {
       const acct = await recurlyGet(`/api/v2021-02-25/accounts/${accountId}`);
@@ -119,19 +116,17 @@ export default async function handler(req, res) {
   }
 
   if (!email) {
-    console.warn("Could not determine email from transaction/account.");
+    console.warn("No email found from payment/account.");
     return res.status(200).send("ok (no email)");
   }
 
   email = String(email).trim().toLowerCase();
 
-  const amount = txn?.amount ?? null;
-  const currency = txn?.currency ?? null;
-  const invoiceId = txn?.invoice?.id || txn?.invoice_id || null;
-  const subscriptionId =
-    txn?.subscription?.id || txn?.subscription_id || txn?.invoice?.subscription?.id || null;
+  const invoiceId = payment?.invoice?.id || payment?.invoice_id || null;
+  const amount = payment?.amount ?? null;
+  const currency = payment?.currency ?? null;
 
-  // 3) Find most recent pending attempt for that email (last 6 hours)
+  // 3) Find latest PENDING attempt for email in last 6 hours
   const cutoff = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
 
   const { data: attempt, error: attemptErr } = await supabase
@@ -148,9 +143,8 @@ export default async function handler(req, res) {
     console.error("Attempt lookup error:", attemptErr);
     return res.status(200).send("ok (attempt lookup failed)");
   }
-
   if (!attempt) {
-    console.warn("No matching pending attempt found for email:", email);
+    console.warn("No matching pending attempt for:", email);
     return res.status(200).send("ok (no matching attempt)");
   }
 
@@ -162,8 +156,7 @@ export default async function handler(req, res) {
       completed_at: new Date().toISOString(),
       recurly_event_id: eventUuid,
       recurly_invoice_id: invoiceId,
-      recurly_transaction_id: transactionId,
-      recurly_subscription_id: subscriptionId,
+      recurly_transaction_id: paymentId, // store paymentId here if your column name is txn_id
       amount,
       currency,
     })
