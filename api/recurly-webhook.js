@@ -9,9 +9,9 @@ async function fetchRecurlySubscription(uuid) {
   const resp = await fetch(url, {
     method: "GET",
     headers: {
-      Accept: "application/json",
+      // ✅ Recurly wants the version in Accept, not as Recurly-Version
+      Accept: "application/vnd.recurly.v2021-02-25",
       Authorization: `Basic ${Buffer.from(`${apiKey}:`).toString("base64")}`,
-      "Recurly-Version": "2021-02-25",
     },
   });
 
@@ -24,7 +24,6 @@ async function fetchRecurlySubscription(uuid) {
 }
 
 export default async function handler(req, res) {
-  // Recurly may validate endpoint with GET/HEAD
   if (req.method === "GET" || req.method === "HEAD") return res.status(200).send("ok");
   if (req.method !== "POST") return res.status(200).send("ok");
 
@@ -43,23 +42,20 @@ export default async function handler(req, res) {
     const eventType = payload?.event_type || payload?.type || "unknown";
     const eventId = payload?.id || payload?.event_id || null;
 
-    // 1) Always log raw webhook payload
+    // Log raw webhook payload
     const { error: logErr } = await supabase.from("webhook_events").insert({
       provider: "recurly",
       event_type: eventType,
       event_id: eventId,
       payload,
     });
-
     if (logErr) console.error("Supabase webhook_events insert error:", logErr);
 
-    // 2) Slim Recurly JSON webhook gives us subscription uuid
     const subUuid = payload?.uuid;
     console.log("Webhook eventType:", eventType, "subUuid:", subUuid);
-
     if (!subUuid) return res.status(200).send("ok");
 
-    // 3) Fetch full subscription details from Recurly API
+    // Fetch full subscription from Recurly
     const sub = await fetchRecurlySubscription(subUuid);
 
     const provider_subscription_id = sub?.uuid || subUuid;
@@ -74,7 +70,7 @@ export default async function handler(req, res) {
 
     const account_code = sub?.account?.code || null;
 
-    // Map shop by plan_code (shops.plan_code should match recurly plan code)
+    // Map shop by plan_code
     let shop_id = null;
     if (plan_code) {
       const { data: shopRow, error: shopErr } = await supabase
@@ -97,7 +93,7 @@ export default async function handler(req, res) {
       current_period_end,
     });
 
-    // 4) Upsert into subscriptions
+    // Upsert into subscriptions
     if (provider_subscription_id && email && plan_code) {
       const { error: upsertErr } = await supabase.from("subscriptions").upsert(
         {
@@ -126,7 +122,6 @@ export default async function handler(req, res) {
     return res.status(200).send("ok");
   } catch (err) {
     console.error("Webhook error:", err);
-    // Still return 200 so Recurly doesn't retry spam
     return res.status(200).send("ok");
   }
 }
