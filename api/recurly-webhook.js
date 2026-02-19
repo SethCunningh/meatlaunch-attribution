@@ -6,12 +6,15 @@ async function fetchRecurlySubscription(uuid) {
 
   const url = `https://v3.recurly.com/subscriptions/${uuid}`;
 
-  const resp = await fetch(url, {
-    method: "GET",
-    headers: {
-      Accept: "application/vnd.recurly.v2021-02-25",
-      Authorization: `Basic ${Buffer.from(`${apiKey}:`).toString("base64")}`,
-    },
+const resp = await fetch(url, {
+  method: "GET",
+  headers: {
+    Accept: "application/vnd.recurly.v2021-02-25",
+    "Accept-Language": "en-US",
+    Authorization: `Basic ${Buffer.from(`${apiKey}:`).toString("base64")}`,
+  },
+});
+
   });
 
   const text = await resp.text();
