@@ -9,14 +9,17 @@ async function fetchRecurlySubscription(uuid) {
   const resp = await fetch(url, {
     method: "GET",
     headers: {
-      // ✅ Recurly requires versioned Accept header
       Accept: "application/vnd.recurly.v2021-02-25",
       Authorization: `Basic ${Buffer.from(`${apiKey}:`).toString("base64")}`,
     },
   });
 
   const text = await resp.text();
-  console.log("Recurly GET", url, "status", resp.status, "body_snippet", text.slice(0, 200));
+
+  // 🔥 ONE LINE THAT'S EASY TO FIND
+  console.log(
+    `### RECURLY_FETCH uuid=${uuid} status=${resp.status} snippet=${text.slice(0, 300).replace(/\s+/g, " ")}`
+  );
 
   if (!resp.ok) throw new Error(`Recurly fetch failed ${resp.status}: ${text}`);
 
@@ -24,40 +27,52 @@ async function fetchRecurlySubscription(uuid) {
 }
 
 export default async function handler(req, res) {
-  // ✅ This must be inside the handler
-  if (req.method === "GET" || req.method === "HEAD") return res.status(200).send("ok-v2");
-  if (req.method !== "POST") return res.status(200).send("ok-v2");
+  // Debug endpoint: /api/recurly-webhook?debug_uuid=XYZ
+  if (req.method === "GET" && req.query?.debug_uuid) {
+    try {
+      const uuid = String(req.query.debug_uuid);
+      const sub = await fetchRecurlySubscription(uuid);
+      return res.status(200).json({
+        ok: true,
+        uuid,
+        plan_code: sub?.plan?.code ?? null,
+        state: sub?.state ?? sub?.status ?? null,
+        account_code: sub?.account?.code ?? null,
+        account_email: sub?.account?.email ?? sub?.account?.bill_to?.email ?? null,
+        keys: Object.keys(sub || {}),
+      });
+    } catch (e) {
+      return res.status(200).json({ ok: false, error: String(e?.message || e) });
+    }
+  }
+
+  if (req.method === "GET" || req.method === "HEAD") return res.status(200).send("ok-v3");
+  if (req.method !== "POST") return res.status(200).send("ok-v3");
 
   const supabaseUrl = process.env.SUPABASE_URL;
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!supabaseUrl || !supabaseKey) {
-    return res.status(500).send("Missing Supabase env vars");
-  }
+  if (!supabaseUrl || !supabaseKey) return res.status(500).send("Missing Supabase env vars");
 
   const supabase = createClient(supabaseUrl, supabaseKey);
 
   try {
     const payload = req.body && typeof req.body === "object" ? req.body : {};
-
     const eventType = payload?.event_type || payload?.type || "unknown";
     const eventId = payload?.id || payload?.event_id || null;
+    const subUuid = payload?.uuid || null;
 
-    // 1) Log raw webhook payload
-    const { error: logErr } = await supabase.from("webhook_events").insert({
+    console.log(`### WEBHOOK_RECEIVED type=${eventType} uuid=${subUuid}`);
+
+    // log raw webhook
+    await supabase.from("webhook_events").insert({
       provider: "recurly",
       event_type: eventType,
       event_id: eventId,
       payload,
     });
-    if (logErr) console.error("Supabase webhook_events insert error:", logErr);
 
-    // 2) Slim payload contains subscription uuid
-    const subUuid = payload?.uuid;
-    console.log("Webhook eventType:", eventType, "subUuid:", subUuid);
     if (!subUuid) return res.status(200).send("ok");
 
-    // 3) Fetch full subscription from Recurly
     const sub = await fetchRecurlySubscription(subUuid);
 
     const provider_subscription_id = sub?.uuid || subUuid;
@@ -65,64 +80,50 @@ export default async function handler(req, res) {
     const status = sub?.state || sub?.status || null;
     const current_period_end = sub?.current_period_ends_at || sub?.current_term_ends_at || null;
 
-    const email =
-      sub?.account?.email ||
-      sub?.account?.bill_to?.email ||
-      null;
-
+    const email = sub?.account?.email || sub?.account?.bill_to?.email || null;
     const account_code = sub?.account?.code || null;
 
-    // 4) Map shop by plan_code
+    console.log(
+      `### PARSED provider_subscription_id=${provider_subscription_id} plan_code=${plan_code} status=${status} email=${email} account_code=${account_code}`
+    );
+
+    // shop lookup
     let shop_id = null;
     if (plan_code) {
-      const { data: shopRow, error: shopErr } = await supabase
+      const { data: shopRow } = await supabase
         .from("shops")
         .select("id")
         .eq("plan_code", plan_code)
         .maybeSingle();
-      if (shopErr) console.error("Shop lookup error:", shopErr);
       shop_id = shopRow?.id || null;
     }
 
-    console.log("Parsed subscription:", {
-      provider_subscription_id,
-      plan_code,
-      status,
-      email,
-      account_code,
-      shop_id,
-      current_period_end,
-    });
-
-    // 5) Upsert into subscriptions
-    if (provider_subscription_id && email && plan_code) {
-      const { error: upsertErr } = await supabase.from("subscriptions").upsert(
-        {
-          provider: "recurly",
-          provider_subscription_id,
-          account_code,
-          email,
-          plan_code,
-          shop_id,
-          status: status || "active",
-          current_period_end,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "provider_subscription_id" }
-      );
-
-      if (upsertErr) console.error("Subscriptions upsert error:", upsertErr);
-    } else {
-      console.log("Skipping upsert (missing one of):", {
-        provider_subscription_id: !!provider_subscription_id,
-        email: !!email,
-        plan_code: !!plan_code,
-      });
+    if (!provider_subscription_id || !email || !plan_code) {
+      console.log(`### SKIP_UPSERT missing provider_subscription_id/email/plan_code`);
+      return res.status(200).send("ok");
     }
+
+    const { error: upsertErr } = await supabase.from("subscriptions").upsert(
+      {
+        provider: "recurly",
+        provider_subscription_id,
+        account_code,
+        email,
+        plan_code,
+        shop_id,
+        status: status || "active",
+        current_period_end,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "provider_subscription_id" }
+    );
+
+    if (upsertErr) console.log(`### UPSERT_ERROR ${JSON.stringify(upsertErr)}`);
+    else console.log(`### UPSERT_OK uuid=${provider_subscription_id}`);
 
     return res.status(200).send("ok");
   } catch (err) {
-    console.error("Webhook error:", err);
+    console.log(`### WEBHOOK_ERROR ${String(err?.message || err)}`);
     return res.status(200).send("ok");
   }
 }
