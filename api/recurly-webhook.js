@@ -104,7 +104,17 @@ export default async function handler(req, res) {
   let payment;
   try {
     const txnUuid = payload.uuid;
-payment = await recurlyFetch(`/api/v2021-02-25/transactions/uuid-${txnUuid}`);
+
+// Query transactions by uuid (works even when /uuid-... routes don’t)
+const txns = await recurlyFetch(`/api/v2021-02-25/transactions?uuid=${txnUuid}`);
+const txn = Array.isArray(txns?.data) ? txns.data[0] : null;
+
+if (!txn) {
+  throw new Error(`No transaction found for uuid ${txnUuid}`);
+}
+
+payment = txn; // keep the rest of your code unchanged
+
 
   } catch (e) {
     console.error("Failed to fetch payment details:", e);
