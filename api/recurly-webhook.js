@@ -13,7 +13,6 @@ const resp = await fetch(url, {
     "Accept-Language": "en-US",
     Authorization: `Basic ${Buffer.from(`${apiKey}:`).toString("base64")}`,
   },
-});
 
   });
 
