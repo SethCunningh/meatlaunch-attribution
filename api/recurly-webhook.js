@@ -1,4 +1,22 @@
 import { createClient } from "@supabase/supabase-js";
+// DEBUG: list sites the current API key can access
+if (req.method === "GET" && req.query?.whoami === "1") {
+  try {
+    const apiKey = process.env.RECURLY_API_KEY;
+    const resp = await fetch("https://v3.recurly.com/sites", {
+      method: "GET",
+      headers: {
+        Accept: "application/vnd.recurly.v2021-02-25",
+        "Accept-Language": "en-US",
+        Authorization: `Basic ${Buffer.from(`${apiKey}:`).toString("base64")}`,
+      },
+    });
+    const text = await resp.text();
+    return res.status(200).send(text);
+  } catch (e) {
+    return res.status(200).send(String(e?.message || e));
+  }
+}
 
 async function fetchRecurlySubscription(uuid) {
   const apiKey = process.env.RECURLY_API_KEY;
